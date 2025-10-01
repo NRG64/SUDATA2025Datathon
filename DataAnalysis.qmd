@@ -22,7 +22,8 @@ library(ranger)
 library(cluster)
 library(factoextra)
 library(rsample)
-
+library(fable)
+library(dplyr)
 
 data <- read.csv("~/Downloads/dynamic_supply_chain_logistics_dataset.csv")
 
@@ -72,6 +73,48 @@ data <- data %>%
 data <- data %>%
   mutate(across(where(is.numeric), ~zoo::na.locf(.x, na.rm = FALSE)))
 
+
+```
+
+
+```{r dataclean}
+
+
+categorical_cols_for_factor <- c("order_fulfillment_status", "weather_condition_severity",
+                      "cargo_condition_status",
+                      "handling_equipment_availability")
+data <- data %>%
+  mutate(across(all_of(categorical_cols_for_factor), as.factor))
+
+
+data <- data %>%
+  mutate(high_risk_fraction = as.numeric(high_risk_fraction)) 
+```
+
+```{r feature eng}
+df_fe <- data %>%
+  mutate(
+    day_of_week   = wday(date, label = TRUE, abbr = FALSE), 
+    week_of_year  = week(date),
+    month         = month(date, label = TRUE, abbr = FALSE), 
+    is_weekend    = factor(ifelse(wday(date) %in% c(1, 7), 1, 0), levels = c(0,1), labels = c("No", "Yes")),
+
+    demand_lag_1   = lag(historical_demand, 1),
+    demand_lag_7   = lag(historical_demand, 7),
+    demand_lag_30  = lag(historical_demand, 30),
+    
+     demand_ma_7   = rollmean(historical_demand, 7, fill = NA, align = "right"),
+    fuel_ma_7     = rollmean(fuel_consumption_rate, 7, fill = NA, align = "right"),
+    eta_ma_7      = rollmean(eta_variation_hours, 7, fill = NA, align = "right"),
+    risk_ma_7     = rollmean(high_risk_fraction, 7, fill = NA, align = "right"),
+
+    log_demand    = log1p(historical_demand),
+    log_shipping  = log1p(shipping_costs),
+
+    fuel_consumption_rate_ma_7 = roll_meanr(fuel_consumption_rate, n = 7, fill = NA),
+    eta_variation_hours_ma_7   = roll_meanr(eta_variation_hours, n = 7, fill = NA)
+  ) %>%
+  drop_na() 
 
 ```
 
@@ -138,60 +181,8 @@ df_fe %>%
     mean_risk_costs = mean(risk_costs),
     mean_total_cost = mean(total_cost)
   )
-
-
-```
-Decomposed costs into transport infastrcuture and risk
-
-```{r rolling CV}
-set.seed(1)
-
-rolling_cv <- rolling_origin(df_fe, initial = 365, assess = 30, cumulatisve = FALSE, skip = 30 )
-
-rolling_cv
 ```
 
-
-```{r dataclean}
-
-
-categorical_cols_for_factor <- c("order_fulfillment_status", "weather_condition_severity",
-                      "cargo_condition_status",
-                      "handling_equipment_availability")
-data <- data %>%
-  mutate(across(all_of(categorical_cols_for_factor), as.factor))
-
-
-data <- data %>%
-  mutate(high_risk_fraction = as.numeric(high_risk_fraction)) 
-```
-
-```{r feature eng}
-df_fe <- data %>%
-  mutate(
-    day_of_week   = wday(date, label = TRUE, abbr = FALSE), 
-    week_of_year  = week(date),
-    month         = month(date, label = TRUE, abbr = FALSE), 
-    is_weekend    = factor(ifelse(wday(date) %in% c(1, 7), 1, 0), levels = c(0,1), labels = c("No", "Yes")),
-
-    demand_lag_1   = lag(historical_demand, 1),
-    demand_lag_7   = lag(historical_demand, 7),
-    demand_lag_30  = lag(historical_demand, 30),
-    
-     demand_ma_7   = rollmean(historical_demand, 7, fill = NA, align = "right"),
-    fuel_ma_7     = rollmean(fuel_consumption_rate, 7, fill = NA, align = "right"),
-    eta_ma_7      = rollmean(eta_variation_hours, 7, fill = NA, align = "right"),
-    risk_ma_7     = rollmean(high_risk_fraction, 7, fill = NA, align = "right"),
-
-    log_demand    = log1p(historical_demand),
-    log_shipping  = log1p(shipping_costs),
-
-    fuel_consumption_rate_ma_7 = roll_meanr(fuel_consumption_rate, n = 7, fill = NA),
-    eta_variation_hours_ma_7   = roll_meanr(eta_variation_hours, n = 7, fill = NA)
-  ) %>%
-  drop_na() 
-
-```
 
 ```{r DA}
 
@@ -253,6 +244,8 @@ df_fe %>%
   theme_minimal()
 ```
 
+Decomposed costs into transport infastrcuture and risk
+
 ```{r predictive modelling}
 df_fe <- df_fe %>% arrange(date)
 
@@ -274,12 +267,22 @@ plot(m_prophet, forecast) +
 prophet_plot_components(m_prophet, forecast)
 ```
 
+```{r prophet CV}
+
+
+```
+
+
+```{r rolling CV}
+set.seed(1)
+
+rolling_cv <- rolling_origin(df_fe, initial = 365, assess = 30, cumulative = FALSE, skip = 30 )
+
+rolling_cv
+```
+
 
 ```{r Delivery time regression}
-library(tidymodels)
-library(ggplot2)
-
-# Recipe for delivery time deviation
 delivery_recipe <- 
   recipe(delivery_time_deviation ~ ., data = train_data) %>%
   update_role(date, new_role = "ID") %>%  # Keep date as ID
@@ -345,6 +348,14 @@ ggplot(rf_predictions, aes(x = date)) +
   theme_minimal()
 
 ```
+
+```{r random forest CV}
+
+
+```
+
+
+
 
 ```{r risk classif}
 df_fe_risk <- df_fe %>% arrange(date)
@@ -418,3 +429,31 @@ ggplot(xgb_predictions, aes(x = date)) +
   ) +
   theme_minimal()
 ```
+
+```{r XGB CV}
+
+
+
+```
+
+```{r hierarchy}
+
+df_bottom <- df_fe %>%
+  select(date, transport_costs, infrastructure_costs, risk_costs) 
+
+df_bottom_long <- df_bottom %>%
+  pivot_longer(
+    cols = c(transport_costs, infrastructure_costs, risk_costs),
+    names_to = "cost_type",
+    values_to = "value"
+  ) %>%
+  as_tsibble(index = date, key = cost_type)
+
+df_hier <- df_bottom_long %>%
+  aggregate_key(. ~ cost_type, value = sum(value))
+
+df_hier
+```
+
+
+
