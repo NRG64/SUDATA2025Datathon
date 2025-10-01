@@ -21,6 +21,7 @@ library(xgboost)
 library(ranger) 
 library(cluster)
 library(factoextra)
+library(rsample)
 
 
 data <- read.csv("~/Downloads/dynamic_supply_chain_logistics_dataset.csv")
@@ -73,6 +74,8 @@ data <- data %>%
 
 
 ```
+
+
 
 ```{r k-means}
 transport_features <- df_fe %>%
@@ -139,6 +142,15 @@ df_fe %>%
 
 ```
 Decomposed costs into transport infastrcuture and risk
+
+```{r rolling CV}
+set.seed(1)
+
+rolling_cv <- rolling_origin(df_fe, initial = 365, assess = 30, cumulatisve = FALSE, skip = 30 )
+
+rolling_cv
+```
+
 
 ```{r dataclean}
 
