@@ -480,6 +480,34 @@ df_hier <- df_bottom_long %>%
   aggregate_key(. ~ cost_type, value = sum(value))
 
 df_hier
+
+fit_base <- df_hier %>%
+  model(base_model = ETS(value))
+
+fc_base <- fit_base %>%
+  forecast(h = "30 days")
+
+fit_reconciled <- fit_base %>%
+  reconcile(min_trace = min_trace(base_model))
+
+fc_reconciled <- fit_reconciled %>%
+  forecast(h = "30 days")
+
+
+fc_reconciled %>%
+  autoplot(df_hier, level = NULL) +
+  labs(
+    title = "Reconciled 30-Day Cost Forecasts",
+    subtitle = "Total, Transport, Infrastructure, and Risk Costs",
+    y = "Cost Value",
+    x = "Date"
+  ) +
+  facet_wrap(vars(cost_type), scales = "free_y", ncol = 1) +
+  theme_minimal()
+
+
+print("Reconciled Forecasts for the next 30 days:")
+print(fc_reconciled)
 ```
 
 
