@@ -1,0 +1,33 @@
+---
+title: "BasicD_DA"
+format: html
+---
+
+
+```{r average lead times}
+df_fe %>%
+  summarise(
+    avg_delivery_deviation = mean(delivery_time_deviation, na.rm = TRUE),
+    avg_lead_time = mean(lead_time_days, na.rm = TRUE),
+    avg_delay_probability = mean(delay_probability, na.rm = TRUE)
+```
+
+You can add options to executable code like this
+
+```{r RF OT}
+df_fe %>%
+  summarise(
+    avg_high_risk_fraction = mean(high_risk_fraction, na.rm = TRUE),
+    max_high_risk_fraction = max(high_risk_fraction, na.rm = TRUE)
+  )
+
+```
+```{r shipping cost efficiency }
+
+df_fe %>%
+  summarise(
+    avg_shipping_cost_per_unit = mean(shipping_costs / historical_demand, na.rm = TRUE),
+    max_shipping_cost_per_unit = max(shipping_costs / historical_demand, na.rm = TRUE)
+  )
+```
+

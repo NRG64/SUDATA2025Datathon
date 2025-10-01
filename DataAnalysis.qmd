@@ -1,0 +1,346 @@
+---
+title: "DATATHON"
+format: html
+editor: visual
+---
+
+```{r setup}
+# Load necessary libraries
+library(tidyverse)
+library(tidymodels)
+library(lubridate)
+library(zoo) # For na_locf
+library(RcppRoll) # For roll_meanr
+library(prophet) # For Prophet model
+library(corrplot) # For correlation plot
+library(anomalize) # For anomaly detection
+library(tsibble) # For time_decompose and anomalize
+library(xgboost) # For XGBoost model
+library(ranger) # For Random Forest engine
+
+
+data <- read.csv("~/Downloads/dynamic_supply_chain_logistics_dataset.csv")
+
+data <- data %>%
+  mutate(timestamp = as.POSIXct(timestamp, tz = "UTC"),
+         date = as_date(timestamp)) %>%
+  group_by(date) %>%
+  summarise(
+    # SUM for flows
+    historical_demand = sum(historical_demand, na.rm = TRUE),
+    shipping_costs    = sum(shipping_costs, na.rm = TRUE),
+
+    # MEAN for continuous metrics
+    fuel_consumption_rate    = mean(fuel_consumption_rate, na.rm = TRUE),
+    eta_variation_hours      = mean(eta_variation_hours, na.rm = TRUE),
+    traffic_congestion_level = mean(traffic_congestion_level, na.rm = TRUE),
+    warehouse_inventory_level= mean(warehouse_inventory_level, na.rm = TRUE),
+    lead_time_days           = mean(lead_time_days, na.rm = TRUE),
+    delivery_time_deviation  = mean(delivery_time_deviation, na.rm = TRUE),
+    delay_probability        = mean(delay_probability, na.rm = TRUE),
+    loading_unloading_time   = mean(loading_unloading_time, na.rm = TRUE),
+    customs_clearance_time   = mean(customs_clearance_time, na.rm = TRUE),
+    driver_behavior_score    = mean(driver_behavior_score, na.rm = TRUE),
+    fatigue_monitoring_score = mean(fatigue_monitoring_score, na.rm = TRUE),
+
+    # Fraction of High Risk shipments
+    # This is the correct way to calculate the fraction (TRUE/FALSE converts to 1/0)
+    high_risk_fraction = mean(risk_classification == "High Risk", na.rm = TRUE),
+
+    # Keep other categorical modes by selecting the most frequent one
+    order_fulfillment_status      = names(sort(table(order_fulfillment_status),decreasing=TRUE))[1],
+    cargo_condition_status        = names(sort(table(cargo_condition_status),decreasing=TRUE))[1],
+    handling_equipment_availability = names(sort(table(handling_equipment_availability),decreasing=TRUE))[1],
+    weather_condition_severity    = names(sort(table(weather_condition_severity),decreasing=TRUE))[1],
+
+    .groups = "drop"
+  ) %>%
+  # Ensure date is properly formatted as date
+  mutate(date = as_date(date)) %>%
+  # Sort by date for time-series operations
+  arrange(date)
+
+# Define categorical columns *after* high_risk_fraction is created
+# Note: 'risk_classification' is NOT included here as it was used to create 'high_risk_fraction'
+categorical_cols_for_factor <- c("order_fulfillment_status",
+                                  "cargo_condition_status",
+                                  "handling_equipment_availability",
+                                  "weather_condition_severity")
+
+# Convert them to factors
+data <- data %>%
+  mutate(across(all_of(categorical_cols_for_factor), as.factor))
+
+data <- data %>%
+  mutate(across(where(is.numeric), ~zoo::na.locf(.x, na.rm = FALSE)))
+
+
+```
+
+```{r dataclean}
+
+
+categorical_cols_for_factor <- c("order_fulfillment_status", "weather_condition_severity",
+                      "cargo_condition_status",
+                      "handling_equipment_availability") # Removed risk_classification here as well.
+
+data <- data %>%
+  mutate(across(all_of(categorical_cols_for_factor), as.factor))
+
+# Ensure high_risk_fraction is numeric and not a factor
+data <- data %>%
+  mutate(high_risk_fraction = as.numeric(high_risk_fraction)) # Important for regression target
+```
+
+```{r feature eng}
+df_fe <- data %>%
+  mutate(
+    day_of_week   = wday(date, label = TRUE, abbr = FALSE), # Use full names for clarity
+    week_of_year  = week(date),
+    month         = month(date, label = TRUE, abbr = FALSE), # Use full names for clarity
+    is_weekend    = factor(ifelse(wday(date) %in% c(1, 7), 1, 0), levels = c(0,1), labels = c("No", "Yes")),
+
+    demand_lag_1   = lag(historical_demand, 1),
+    demand_lag_7   = lag(historical_demand, 7),
+    demand_lag_30  = lag(historical_demand, 30),
+
+    fuel_consumption_rate_ma_7 = roll_meanr(fuel_consumption_rate, n = 7, fill = NA),
+    eta_variation_hours_ma_7   = roll_meanr(eta_variation_hours, n = 7, fill = NA)
+  ) %>%
+  drop_na() # This will remove rows where lags/rolling means created NAs.
+            # Make sure you have enough data left.
+            # Note: `drop_na()` here also removes rows if `high_risk_fraction` has NAs.
+            # If `high_risk_fraction` (the target) has NAs, ensure they are handled before this.
+
+# Check dimensions after feature engineering
+message("Dimensions of df_fe after feature engineering and drop_na: ", nrow(df_fe), " rows, ", ncol(df_fe), " columns")
+
+```
+
+```{r DA}
+
+# Make sure smooth_vec is available (e.g., from 'smoother' or similar package, or just remove if not needed)
+# For simplicity, using geom_smooth for trend
+ggplot(df_fe, aes(x = date, y = historical_demand)) +
+  geom_line(alpha = 0.6) +
+  geom_smooth(method = "loess", span = 0.2, color = "blue", se = FALSE) + # Replaced smooth_vec
+  labs(title = "Historical Demand Over Time",
+       y = "Historical Demand") +
+  theme_minimal()
+
+# Congestion vs ETA
+# Ensure traffic_congestion_level is treated as a factor if it represents discrete levels
+ggplot(df_fe, aes(x = factor(traffic_congestion_level), y = eta_variation_hours)) +
+  geom_boxplot(fill = "lightblue") +
+  labs(title = "ETA Variation by Traffic Congestion Level",
+       x = "Traffic Congestion Level (Factor)",
+       y = "ETA Variation (Hours)") +
+  theme_minimal()
+
+# Weather vs Shipping Costs
+ggplot(df_fe, aes(x = weather_condition_severity, y = shipping_costs, fill = weather_condition_severity)) +
+  geom_boxplot() +
+  labs(title = "Shipping Costs by Weather Severity",
+       x = "Weather Condition Severity",
+       y = "Shipping Costs") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Correlation Matrix
+M <- df_fe %>%
+  select(where(is.numeric)) %>% # Select all numeric columns for correlation
+  select(-week_of_year) %>% # Remove week_of_year if you don't want it in correlation
+                            # or any other numeric columns that are IDs like date components
+  cor(use = "pairwise.complete.obs") # use="pairwise.complete.obs" handles NAs in correlation calc
+
+corrplot(M, method = "circle", type = "upper", order = "hclust", tl.col = "black", tl.srt = 45)
+```
+
+
+```{r anom}
+
+df_fe %>%
+  as_tsibble(index = date) %>%
+  time_decompose(fuel_consumption_rate, method = "stl", frequency = "week") %>% # Changed trend = "periodic" to frequency = "week"
+  anomalize(remainder, method = "iqr", alpha = 0.05) %>%
+  time_recompose() %>%
+  plot_anomalies(time_recomposed = TRUE) +
+  labs(title = "Fuel Consumption Anomalies") +
+  theme_minimal()
+
+# ETA anomalies
+df_fe %>%
+  as_tsibble(index = date) %>%
+  time_decompose(eta_variation_hours, method = "stl", frequency = "week") %>% # Changed trend = "periodic" to frequency = "week"
+  anomalize(remainder, method = "iqr", alpha = 0.05) %>%
+  time_recompose() %>%
+  plot_anomalies(time_recomposed = TRUE) +
+  labs(title = "ETA Variation Anomalies") +
+  theme_minimal()
+```
+
+```{r predictive modelling}
+df_fe <- df_fe %>% arrange(date)
+
+data_split <- initial_time_split(df_fe, prop = 0.8)
+train_data <- training(data_split)
+test_data  <- testing(data_split)
+
+df_prophet_train <- train_data %>%
+  select(ds = date, y = historical_demand)
+
+m_prophet <- prophet(df_prophet_train)
+future <- make_future_dataframe(m_prophet, periods = nrow(test_data), freq = "day")
+forecast <- predict(m_prophet, future)
+
+plot(m_prophet, forecast) +
+  labs(title = "Prophet Forecast for Historical Demand") +
+  theme_minimal()
+
+prophet_plot_components(m_prophet, forecast)
+```
+
+
+```{r Delivery time regression}
+library(tidymodels)
+library(ggplot2)
+
+# Recipe for delivery time deviation
+delivery_recipe <- 
+  recipe(delivery_time_deviation ~ ., data = train_data) %>%
+  update_role(date, new_role = "ID") %>%  # Keep date as ID
+  step_rm(order_fulfillment_status, cargo_condition_status,
+          handling_equipment_availability) %>%
+  step_integer(all_nominal_predictors()) %>%
+  step_impute_mean(all_numeric_predictors()) %>%
+  step_normalize(all_numeric_predictors())
+
+# Random Forest model with fixed parameters
+rf_model <- 
+  rand_forest(
+    mtry = 5,      # number of predictors sampled at each split
+    trees = 1000,  # number of trees
+    min_n = 5      # minimum node size
+  ) %>%
+  set_engine("ranger", importance = "permutation") %>%
+  set_mode("regression")
+
+# Fit workflow
+rf_fit <- workflow() %>%
+  add_recipe(delivery_recipe) %>%
+  add_model(rf_model) %>%
+  fit(data = train_data)
+
+# Predict on test data
+rf_predictions <- predict(rf_fit, new_data = test_data) %>%
+  bind_cols(test_data %>% select(date, delivery_time_deviation))
+
+# Calculate metrics
+mae_rf  <- mae(rf_predictions, truth = delivery_time_deviation, estimate = .pred)
+rmse_rf <- rmse(rf_predictions, truth = delivery_time_deviation, estimate = .pred)
+rsq_rf  <- rsq(rf_predictions, truth = delivery_time_deviation, estimate = .pred)
+
+print(mae_rf)
+print(rmse_rf)
+print(rsq_rf)
+
+# Predicted vs Actual scatter plot
+ggplot(rf_predictions, aes(x = delivery_time_deviation, y = .pred)) +
+  geom_point(alpha = 0.6) +
+  geom_abline(slope = 1, intercept = 0, color = "red", linetype = "dashed") +
+  labs(
+    title = "Predicted vs Actual Delivery Time Deviation (Random Forest)",
+    subtitle = paste0("MAE: ", round(mae_rf$.estimate, 4), 
+                      ", RMSE: ", round(rmse_rf$.estimate, 4)),
+    x = "Actual Delivery Time Deviation",
+    y = "Predicted Delivery Time Deviation"
+  ) +
+  theme_minimal() +
+  coord_fixed()
+
+# Actual vs Predicted over time
+ggplot(rf_predictions, aes(x = date)) +
+  geom_line(aes(y = delivery_time_deviation, color = "Actual")) +
+  geom_line(aes(y = .pred, color = "Predicted"), linetype = "dashed") +
+  labs(
+    title = "Actual vs Predicted Delivery Time Deviation Over Time",
+    x = "Date",
+    y = "Delivery Time Deviation",
+    color = "Type"
+  ) +
+  theme_minimal()
+
+```
+
+```{r risk classif}
+df_fe_risk <- df_fe %>% arrange(date)
+
+risk_split <- initial_time_split(df_fe_risk, prop = 0.8)
+risk_train <- training(risk_split)
+risk_test  <- testing(risk_split)
+
+message("Risk Train data date range: ", min(risk_train$date), " to ", max(risk_train$date))
+message("Risk Test data date range: ", min(risk_test$date), " to ", max(risk_test$date))
+
+risk_recipe <- recipe(high_risk_fraction ~ ., data = risk_train) %>%
+  update_role(date, new_role = "ID") %>%
+  step_rm(order_fulfillment_status, cargo_condition_status,
+          handling_equipment_availability, weather_condition_severity) %>%
+  step_integer(all_nominal_predictors()) %>%
+  step_impute_mean(all_numeric_predictors()) %>%
+  step_normalize(all_numeric_predictors())
+
+xgb_model <- boost_tree(
+  trees      = 500,
+  tree_depth = 6,
+  learn_rate = 0.05,
+  min_n      = 10
+) %>%
+  set_engine("xgboost") %>%
+  set_mode("regression")
+
+xgb_workflow <- workflow() %>%
+  add_recipe(risk_recipe) %>%
+  add_model(xgb_model)
+
+xgb_fit <- xgb_workflow %>%
+  fit(data = risk_train)
+
+xgb_predictions <- predict(xgb_fit, new_data = risk_test) %>%
+  bind_cols(risk_test %>% select(date, high_risk_fraction))
+
+xgb_predictions <- xgb_predictions %>%
+  mutate(.pred = pmax(0, pmin(1, .pred)))
+
+mae_xgb <- mae(xgb_predictions, truth = high_risk_fraction, estimate = .pred)
+rmse_xgb <- rmse(xgb_predictions, truth = high_risk_fraction, estimate = .pred)
+rsq_xgb <- rsq(xgb_predictions, truth = high_risk_fraction, estimate = .pred)
+
+print(mae_xgb)
+print(rmse_xgb)
+print(rsq_xgb)
+
+ggplot(xgb_predictions, aes(x = high_risk_fraction, y = .pred)) +
+  geom_point(alpha = 0.6) +
+  geom_abline(slope = 1, intercept = 0, color = "red", linetype = "dashed", size = 1) +
+  labs(
+    title = "Predicted vs Actual High Risk Fraction (XGBoost)",
+    subtitle = paste0("MAE: ", round(mae_xgb$.estimate, 4),
+                      ", RMSE: ", round(rmse_xgb$.estimate, 4)),
+    x = "Actual High Risk Fraction",
+    y = "Predicted High Risk Fraction"
+  ) +
+  theme_minimal() +
+  coord_fixed()
+
+ggplot(xgb_predictions, aes(x = date)) +
+  geom_line(aes(y = high_risk_fraction, color = "Actual")) +
+  geom_line(aes(y = .pred, color = "Predicted"), linetype = "dashed") +
+  labs(
+    title = "Actual vs Predicted High Risk Fraction Over Time",
+    x = "Date",
+    y = "High Risk Fraction",
+    color = "Type"
+  ) +
+  theme_minimal()
+```
