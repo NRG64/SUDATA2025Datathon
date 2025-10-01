@@ -269,6 +269,12 @@ prophet_plot_components(m_prophet, forecast)
 
 ```{r prophet CV}
 
+df_cv_prophet <- cross_validation(m_prophet, initial = 365.25, period = 30, horizon = 30, units = "days")
+
+prophet_performance <- performance_metrics(df_cv_prophet)
+print("Prophet Cross-Validation Metrics:")
+print(head(prophet_performance))
+plot_cross_validation_metric(df_cv_prophet, metric = 'rmse')
 
 ```
 
@@ -351,7 +357,20 @@ ggplot(rf_predictions, aes(x = date)) +
 
 ```{r random forest CV}
 
+rf_workflow <- workflow() %>%
+  add_recipe(delivery_recipe) %>%
+  add_model(rf_model)
 
+set.seed(2)
+rf_cv_results <- fit_resamples(
+  rf_workflow,
+  resamples = rolling_cv,
+  metrics = metric_set(rmse, mae, rsq),
+  control = control_resamples(save_pred = TRUE)
+)
+
+print("Random Forest Cross-Validation Results:")
+collect_metrics(rf_cv_results)
 ```
 
 
@@ -431,8 +450,16 @@ ggplot(xgb_predictions, aes(x = date)) +
 ```
 
 ```{r XGB CV}
+set.seed(3)
+xgb_cv_results <- fit_resamples(
+  xgb_workflow,
+  resamples = rolling_cv,
+  metrics = metric_set(rmse, mae, rsq),
+  control = control_resamples(save_pred = TRUE)
+)
 
-
+print("XGBoost Cross-Validation Results:")
+collect_metrics(xgb_cv_results)
 
 ```
 
