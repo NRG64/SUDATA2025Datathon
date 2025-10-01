@@ -10,6 +10,7 @@ df_fe %>%
     avg_delivery_deviation = mean(delivery_time_deviation, na.rm = TRUE),
     avg_lead_time = mean(lead_time_days, na.rm = TRUE),
     avg_delay_probability = mean(delay_probability, na.rm = TRUE)
+  )
 ```
 
 You can add options to executable code like this

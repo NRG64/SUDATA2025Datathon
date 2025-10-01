@@ -5,18 +5,22 @@ editor: visual
 ---
 
 ```{r setup}
-# Load necessary libraries
+
 library(tidyverse)
 library(tidymodels)
+library(ggplot2)
+library(tidyr)
 library(lubridate)
-library(zoo) # For na_locf
-library(RcppRoll) # For roll_meanr
-library(prophet) # For Prophet model
-library(corrplot) # For correlation plot
-library(anomalize) # For anomaly detection
-library(tsibble) # For time_decompose and anomalize
-library(xgboost) # For XGBoost model
-library(ranger) # For Random Forest engine
+library(zoo) 
+library(RcppRoll) 
+library(prophet)
+library(corrplot) 
+library(anomalize) 
+library(tsibble)
+library(xgboost) 
+library(ranger) 
+library(cluster)
+library(factoextra)
 
 
 data <- read.csv("~/Downloads/dynamic_supply_chain_logistics_dataset.csv")
@@ -43,11 +47,8 @@ data <- data %>%
     driver_behavior_score    = mean(driver_behavior_score, na.rm = TRUE),
     fatigue_monitoring_score = mean(fatigue_monitoring_score, na.rm = TRUE),
 
-    # Fraction of High Risk shipments
-    # This is the correct way to calculate the fraction (TRUE/FALSE converts to 1/0)
     high_risk_fraction = mean(risk_classification == "High Risk", na.rm = TRUE),
 
-    # Keep other categorical modes by selecting the most frequent one
     order_fulfillment_status      = names(sort(table(order_fulfillment_status),decreasing=TRUE))[1],
     cargo_condition_status        = names(sort(table(cargo_condition_status),decreasing=TRUE))[1],
     handling_equipment_availability = names(sort(table(handling_equipment_availability),decreasing=TRUE))[1],
@@ -55,13 +56,9 @@ data <- data %>%
 
     .groups = "drop"
   ) %>%
-  # Ensure date is properly formatted as date
   mutate(date = as_date(date)) %>%
-  # Sort by date for time-series operations
   arrange(date)
 
-# Define categorical columns *after* high_risk_fraction is created
-# Note: 'risk_classification' is NOT included here as it was used to create 'high_risk_fraction'
 categorical_cols_for_factor <- c("order_fulfillment_status",
                                   "cargo_condition_status",
                                   "handling_equipment_availability",
@@ -77,50 +74,115 @@ data <- data %>%
 
 ```
 
+```{r k-means}
+transport_features <- df_fe %>%
+  select(fuel_consumption_rate, eta_variation_hours, traffic_congestion_level)
+
+transport_scaled <- scale(transport_features)
+
+sil_scores <- sapply(2:6, function(k){
+  set.seed(123)
+  km_tmp <- kmeans(transport_scaled, centers = k, nstart = 25)
+  mean(silhouette(km_tmp$cluster, dist(transport_scaled))[, 3])
+})
+best_k <- which.max(sil_scores) + 1
+
+set.seed(123)
+km <- kmeans(transport_scaled, centers = best_k, nstart = 25)
+
+df_fe$transport_mode <- factor(km$cluster, labels = paste0("Mode_", 1:best_k))
+
+cluster_summary <- aggregate(transport_features,
+                             by = list(transport_mode = df_fe$transport_mode),
+                             FUN = mean)
+print(cluster_summary)
+
+fviz_cluster(km, data = transport_scaled,
+             geom = "point",
+             ellipse.type = "convex",
+             palette = "jco",
+             main = paste("K-means Clustering (k =", best_k, ")"))
+
+
+
+```
+
+
+Mode_2 clearly has higher fuel → long-haul or heavy transport.
+
+Mode_3 has low ETA variation → likely light vehicles or predictable routes.
+
+Modes 1 & 4 are in-between but differ in congestion/ETA pattern
+```{r cost decomp}
+df_fe <- df_fe %>%
+  mutate(
+    transport_costs = fuel_consumption_rate + traffic_congestion_level + driver_behavior_score,
+    infrastructure_costs = warehouse_inventory_level + loading_unloading_time,
+    risk_costs = delay_probability + delivery_time_deviation,
+    total_cost = transport_costs + infrastructure_costs + risk_costs
+  ) %>%
+  mutate(
+    transport_costs_bin = cut(transport_costs, breaks = 3, labels = c("Low", "Medium", "High")),
+    infrastructure_costs_bin = cut(infrastructure_costs, breaks = 3, labels = c("Low", "Medium", "High")),
+    risk_costs_bin = cut(risk_costs, breaks = 3, labels = c("Low", "Medium", "High"))
+  )
+
+df_fe %>%
+  group_by(transport_mode) %>%
+  summarise(
+    mean_transport_costs = mean(transport_costs),
+    mean_infrastructure_costs = mean(infrastructure_costs),
+    mean_risk_costs = mean(risk_costs),
+    mean_total_cost = mean(total_cost)
+  )
+
+
+```
+Decomposed costs into transport infastrcuture and risk
+
 ```{r dataclean}
 
 
 categorical_cols_for_factor <- c("order_fulfillment_status", "weather_condition_severity",
                       "cargo_condition_status",
-                      "handling_equipment_availability") # Removed risk_classification here as well.
-
+                      "handling_equipment_availability")
 data <- data %>%
   mutate(across(all_of(categorical_cols_for_factor), as.factor))
 
-# Ensure high_risk_fraction is numeric and not a factor
+
 data <- data %>%
-  mutate(high_risk_fraction = as.numeric(high_risk_fraction)) # Important for regression target
+  mutate(high_risk_fraction = as.numeric(high_risk_fraction)) 
 ```
 
 ```{r feature eng}
 df_fe <- data %>%
   mutate(
-    day_of_week   = wday(date, label = TRUE, abbr = FALSE), # Use full names for clarity
+    day_of_week   = wday(date, label = TRUE, abbr = FALSE), 
     week_of_year  = week(date),
-    month         = month(date, label = TRUE, abbr = FALSE), # Use full names for clarity
+    month         = month(date, label = TRUE, abbr = FALSE), 
     is_weekend    = factor(ifelse(wday(date) %in% c(1, 7), 1, 0), levels = c(0,1), labels = c("No", "Yes")),
 
     demand_lag_1   = lag(historical_demand, 1),
     demand_lag_7   = lag(historical_demand, 7),
     demand_lag_30  = lag(historical_demand, 30),
+    
+     demand_ma_7   = rollmean(historical_demand, 7, fill = NA, align = "right"),
+    fuel_ma_7     = rollmean(fuel_consumption_rate, 7, fill = NA, align = "right"),
+    eta_ma_7      = rollmean(eta_variation_hours, 7, fill = NA, align = "right"),
+    risk_ma_7     = rollmean(high_risk_fraction, 7, fill = NA, align = "right"),
+
+    log_demand    = log1p(historical_demand),
+    log_shipping  = log1p(shipping_costs),
 
     fuel_consumption_rate_ma_7 = roll_meanr(fuel_consumption_rate, n = 7, fill = NA),
     eta_variation_hours_ma_7   = roll_meanr(eta_variation_hours, n = 7, fill = NA)
   ) %>%
-  drop_na() # This will remove rows where lags/rolling means created NAs.
-            # Make sure you have enough data left.
-            # Note: `drop_na()` here also removes rows if `high_risk_fraction` has NAs.
-            # If `high_risk_fraction` (the target) has NAs, ensure they are handled before this.
-
-# Check dimensions after feature engineering
-message("Dimensions of df_fe after feature engineering and drop_na: ", nrow(df_fe), " rows, ", ncol(df_fe), " columns")
+  drop_na() 
 
 ```
 
 ```{r DA}
 
-# Make sure smooth_vec is available (e.g., from 'smoother' or similar package, or just remove if not needed)
-# For simplicity, using geom_smooth for trend
 ggplot(df_fe, aes(x = date, y = historical_demand)) +
   geom_line(alpha = 0.6) +
   geom_smooth(method = "loess", span = 0.2, color = "blue", se = FALSE) + # Replaced smooth_vec
