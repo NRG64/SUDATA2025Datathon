@@ -3,6 +3,24 @@ title: "BasicD_DA"
 format: html
 ---
 
+```{r basic summary}
+
+df_fe %>%
+  summarise(
+    avg_delivery_deviation = mean(delivery_time_deviation, na.rm = TRUE),
+    max_delivery_deviation = max(delivery_time_deviation, na.rm = TRUE),
+    avg_lead_time = mean(lead_time_days, na.rm = TRUE),
+    max_lead_time = max(lead_time_days, na.rm = TRUE),
+    avg_delay_probability = mean(delay_probability, na.rm = TRUE),
+    max_delay_probability = max(delay_probability, na.rm = TRUE),
+    avg_high_risk_fraction = mean(high_risk_fraction, na.rm = TRUE),
+    max_high_risk_fraction = max(high_risk_fraction, na.rm = TRUE)
+  )
+
+
+```
+
+
 
 ```{r average lead times}
 df_fe %>%
@@ -23,12 +41,95 @@ df_fe %>%
   )
 
 ```
+
 ```{r shipping cost efficiency }
 
 df_fe %>%
   summarise(
     avg_shipping_cost_per_unit = mean(shipping_costs / historical_demand, na.rm = TRUE),
-    max_shipping_cost_per_unit = max(shipping_costs / historical_demand, na.rm = TRUE)
+    max_shipping_cost_per_unit = max(shipping_costs / historical_demand, na.rm = TRUE),
+    avg_total_cost_per_unit = mean(total_cost / historical_demand, na.rm = TRUE)
   )
 ```
+
+```{r transport }
+
+df_fe %>%
+  group_by(transport_mode) %>%
+  summarise(
+    mean_transport_costs = mean(transport_costs, na.rm = TRUE),
+    mean_infrastructure_costs = mean(infrastructure_costs, na.rm = TRUE),
+    mean_risk_costs = mean(risk_costs, na.rm = TRUE),
+    mean_total_cost = mean(total_cost, na.rm = TRUE),
+    avg_delivery_deviation = mean(delivery_time_deviation, na.rm = TRUE),
+    avg_high_risk_fraction = mean(high_risk_fraction, na.rm = TRUE)
+  ) %>%
+  arrange(desc(mean_total_cost))
+
+```
+
+
+```{r }
+
+# Distribution of delivery deviations
+ggplot(df_fe, aes(x = delivery_time_deviation)) +
+  geom_density(fill = "lightblue", alpha = 0.6) +
+  labs(title = "Distribution of Delivery Time Deviations", x = "Deviation (hours)", y = "Density") +
+  theme_minimal()
+
+
+# Distribution of high risk fraction
+ggplot(df_fe, aes(x = high_risk_fraction)) +
+  geom_density(fill = "salmon", alpha = 0.6) +
+  labs(title = "Distribution of High Risk Fraction", x = "High Risk Fraction", y = "Density") +
+  theme_minimal()
+
+df_fe <- df_fe %>%
+  mutate(high_risk_fraction_round = factor(round(high_risk_fraction, 2)))
+
+# Boxplot with rounded labels
+ggplot(df_fe, aes(x = high_risk_fraction_round, y = delivery_time_deviation)) +
+  geom_boxplot(fill = "lightblue", alpha = 0.6) +
+  geom_jitter(width = 0.1, alpha = 0.3, color = "darkblue") +
+  labs(
+    title = "Delivery Time Deviation by High Risk Fraction",
+    x = "High Risk Fraction (Rounded)",
+    y = "Delivery Time Deviation (hours)"
+  ) +
+  theme_minimal()
+
+ggplot(df_fe, aes(x = factor(high_risk_fraction), y = delivery_time_deviation)) +
+  geom_violin(fill = "salmon", alpha = 0.5) +
+  geom_boxplot(width = 0.1, fill = "white") +
+  labs(
+    title = "Delivery Time Deviation Distribution by High Risk Fraction",
+    x = "High Risk Fraction",
+    y = "Delivery Time Deviation (hours)"
+  ) +
+  theme_minimal()
+
+ggplot(df_fe, aes(x = fuel_consumption_rate, y = total_cost)) +
+  geom_point(alpha = 0.5, color = "darkgreen") +
+  geom_smooth(method = "loess", color = "blue") +
+  labs(title = "Total Cost vs Fuel Consumption Rate", x = "Fuel Consumption Rate", y = "Total Cost") +
+  theme_minimal()
+```
+
+
+```{r costs v delivery}
+
+ggplot(df_clean, aes(x = transport_costs, y = delivery_time_deviation)) +
+  geom_point(alpha = 0.5, color = "blue") +
+  geom_smooth(method = "lm", color = "red") +
+  labs(title = "Transport Costs vs Delivery Time Deviation",
+       x = "Transport Costs", y = "Delivery Time Deviation") +
+  theme_minimal()
+
+ggplot(df_clean, aes(x = infrastructure_costs, y = delivery_time_deviation)) +
+  geom_point(alpha = 0.5, color = "green") +
+  geom_smooth(method = "lm", color = "red") +
+  labs(title = "Infrastructure Costs vs Delivery Time Deviation",
+       x = "Infrastructure Costs", y = "Delivery Time Deviation") +
+  theme_minimal()
+
 
