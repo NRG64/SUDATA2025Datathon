@@ -3,7 +3,20 @@ title: "BasicD_DA"
 format: html
 ---
 
-```{r basic summary}
+```{r basic summary and cleaning}
+
+df_clean <- df_fe %>%
+  mutate(
+    date = as.Date(date),
+    delivery_time_deviation = as.numeric(delivery_time_deviation),
+    high_risk_fraction      = as.numeric(high_risk_fraction),
+    transport_costs         = as.numeric(transport_costs),
+    infrastructure_costs    = as.numeric(infrastructure_costs),
+    risk_costs              = as.numeric(risk_costs),
+    total_cost              = as.numeric(total_cost)
+  ) %>%
+  arrange(date) %>%
+  mutate(across(where(is.numeric), ~zoo::na.locf(.x, na.rm = FALSE))) 
 
 df_fe %>%
   summarise(
@@ -98,7 +111,7 @@ ggplot(df_fe, aes(x = high_risk_fraction_round, y = delivery_time_deviation)) +
   ) +
   theme_minimal()
 
-ggplot(df_fe, aes(x = factor(high_risk_fraction), y = delivery_time_deviation)) +
+ggplot(df_fe, aes(x = factor(high_risk_fraction_round), y = delivery_time_deviation)) +
   geom_violin(fill = "salmon", alpha = 0.5) +
   geom_boxplot(width = 0.1, fill = "white") +
   labs(
@@ -131,5 +144,5 @@ ggplot(df_clean, aes(x = infrastructure_costs, y = delivery_time_deviation)) +
   labs(title = "Infrastructure Costs vs Delivery Time Deviation",
        x = "Infrastructure Costs", y = "Delivery Time Deviation") +
   theme_minimal()
-
+```
 
